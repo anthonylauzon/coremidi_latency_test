@@ -7,8 +7,7 @@
 uint64_t start;
 uint64_t end;
 uint64_t elapsed;
-uint64_t elapsedNano;
-uint64_t latencies[NUM_SEND];
+uint64_t sumElapsed;
 
 int processedCount;
 int outputIndex;
@@ -57,17 +56,15 @@ void midiInCallback(const MIDIPacketList *packetList,
 
   end = mach_absolute_time();
   elapsed = end - start;
-  elapsedNano = elapsed * sTimebaseInfo.numer / sTimebaseInfo.denom;
-  latencies[processedCount] = elapsedNano;
+  sumElapsed += elapsed;
+
   if (processedCount == NUM_SEND - 1) {
-    uint64_t sum_latencies;
-    for (int i = 0; i < NUM_SEND - 1; i++) {
-      sum_latencies += latencies[i];
-    }
 
-    uint64_t avg_latency = sum_latencies / NUM_SEND;
+    uint64_t avgElapsed = sumElapsed / NUM_SEND;
+    uint64_t avgNano = avgElapsed * sTimebaseInfo.numer / 
+                       sTimebaseInfo.denom;
 
-    printf("avg_latency: %lld\n", avg_latency);
+    printf("avg_latency: %lld\n", avgNano);
 
 
     if (status = MIDIPortDispose(midiout)) {
@@ -75,9 +72,11 @@ void midiInCallback(const MIDIPacketList *packetList,
       printf("%s\n", GetMacOSStatusErrorString(status));
       exit(status);
     }
+
     midiout = NULL;
 
     pthread_mutex_destroy(&midiMutex);
+
     exit(0);
   }
 
@@ -130,19 +129,38 @@ void runLatencyTest() {
   }
 
 
-  MIDITimeStamp timestamp = 0;   // 0 will mean play now. 
-  Byte buffer[1024];             // storage space for MIDI Packets (max 65536)
-  MIDIPacketList *packetlist = (MIDIPacketList*)buffer;
-  MIDIPacket *currentpacket = MIDIPacketListInit(packetlist);
+  MIDITimeStamp timestamp = 0; // play immediately
+
+  Byte bufferOn[1024];            
+  Byte bufferOff[1024];
+
+  MIDIPacketList *packetlistOn = (MIDIPacketList*)bufferOn;
+  MIDIPacket *currentpacketOn = MIDIPacketListInit(packetlistOn);
+
+  MIDIPacketList *packetlistOff = (MIDIPacketList*)bufferOff;
+  MIDIPacket *currentpacketOff = MIDIPacketListInit(packetlistOff);
+
   Byte noteon[MESSAGESIZE] = {0x90, 60, 90};
-  currentpacket = MIDIPacketListAdd(packetlist, 
-                                    sizeof(buffer), 
-                                    currentpacket, 
-                                    timestamp, 
-                                    MESSAGESIZE, 
-                                    noteon);
+  Byte noteoff[MESSAGESIZE] = {0x80, 60, 90};
+
+  MIDIPacketListAdd(packetlistOn, 
+                    sizeof(bufferOn), 
+                    currentpacketOn, 
+                    timestamp, 
+                    MESSAGESIZE, 
+                    noteon);
+  
+  MIDIPacketListAdd(packetlistOff, 
+                    sizeof(bufferOff), 
+                    currentpacketOff, 
+                    timestamp, 
+                    MESSAGESIZE, 
+                    noteoff);
+
+  MIDIPacketList *notePacketlists[2] = {packetlistOn, packetlistOff};
 
   for (int i = 0; i < NUM_SEND; i++) {
+    MIDIPacketList *packetlist = notePacketlists[i % 2];
     pthread_mutex_lock(&midiMutex);
     start = mach_absolute_time();
     if (status = MIDISend(midiout, dest, packetlist)) {
